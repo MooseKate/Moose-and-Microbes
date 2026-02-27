@@ -1,0 +1,448 @@
+---
+title: "Combined16S"
+author: "Katie Anderson"
+date: "2024-07-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = './')
+library(BiocManager)
+library(devtools)
+#install.packages("devtools")
+#devtools::install_github("benjjneb/dada2", ref="v1.16")
+library(dada2)
+#BiocManager::install("DECIPHER", force=TRUE)
+library(DECIPHER)
+#install.packages("phangorn")
+library(phangorn)
+#BiocManager::install("phyloseq", force=TRUE)
+library(phyloseq)
+
+#BiocManager::install("decontam")
+library(decontam)
+#install.packages("tidyverse")
+library(tidyverse)
+library(dplyr)
+#BiocManager::install("multtest", force=TRUE)
+#devtools::install_github("gauravsk/ranacapa")
+library(ranacapa)
+#BiocManager::install("genefilter")
+library(genefilter)
+#install.packages("BiodiversityR")
+library(BiodiversityR)
+library(vegan)
+library(reshape2)
+#devtools::install_github("jbisanz/qiime2R")
+library(qiime2R)
+citation("qiime2R")
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("parallelDist")
+library(parallelDist)
+library(lme4)
+library(lmerTest)
+#install.packages("devtools")
+#Install the following to use Knit to PDF option:
+#install.packages(tinytex)
+#tinytex::install_tinytex()
+library(NatParksPalettes)
+library(knitr)
+library(openxlsx)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+
+# Load QIIME2 Files
+
+Load non-rarefied QIIME2 file.
+
+
+```{r}
+#This is extracting embedded data and object metadata into an R session, in other words, asking R to pull only the data from the list and put it in an asv table, displaying species and quantity
+SVs <- qiime2R::read_qza("./merged-table.qza")
+
+#"$" allows you to access a single variable in a data set
+asv_table<-(SVs$data) 
+Asv_table<-data.frame(asv_table)
+#change column name in new table
+colnames(Asv_table) <- colnames(asv_table) 
+
+#Reading in evolutionary tree, breaking down taxonomic ranks
+tree<- qiime2R::read_qza("./Msepp-tree.qza") 
+tree2<-qiime2R::read_qza("Combined16s/Csepp-tree.qza")
+tree$data
+tree2$data
+Tree<-bind.tree(tree$data, tree2$data)
+
+##Reading in Metadata
+
+Metadata_final <- read.csv("./Anderson_SampleList2024.csv") 
+#Metadata_final<-subset(Metadata_final, Deer_Name != "Blank")
+#Copy only the sample names as a character list, and set them as the row labels for the metadata sheet, identifying that "sample_name" is not a number
+metadata_finalnames <- as.character(Metadata_final$sample_name)
+row.names(Metadata_final) <- Metadata_final$sample_name
+
+##Reading Taxonomy
+taxonomy<-read_qza("./merged-taxonomy.qza") #taxonomy 
+head(taxonomy$data)
+#When taxonomy is imported, a single string is returned along with a confidence score. For many analyses, we will want to break up this string, and for that purpose, the parse_taxonomy() function is provided
+taxonomy<-qiime2R::parse_taxonomy(taxonomy$data)
+head(taxonomy)
+
+#Again, convert names to characters, so they will now be read as characters rather than data values
+taxonomy$Kingdom <- as.character(taxonomy$Kingdom) 
+taxonomy$Phylum <- as.character(taxonomy$Phylum)
+taxonomy$Class <- as.character(taxonomy$Class)
+taxonomy$Order <- as.character(taxonomy$Order)
+taxonomy$Family <- as.character(taxonomy$Family)
+taxonomy$Genus <- as.character(taxonomy$Genus)
+taxonomy$Species <- as.character(taxonomy$Species)
+taxonomy <- as.matrix(taxonomy)
+```
+
+# Create Phyloseq Object
+
+Create a phyloseq object using all of the files we got from QIIME2. A **phyloseq object** is a data format commonly used for microbiome data in R.
+: Access the phyloseq website for more information
+
+```{r}
+phyloseq_16S <- phyloseq::phyloseq(otu_table(Asv_table, taxa_are_rows = TRUE, 
+errorIfNULL = TRUE), sample_data(Metadata_final), tax_table(taxonomy), 
+phy_tree(Tree))
+
+ #Check to make sure your phyloseq object was properly loaded, if so, run will summarize the phyloseq object in console, showing the number of ASVs and samples contained in the object Note that it is useful to periodically summarize the object to ensure that all desired information is still available
+phyloseq_16S  
+
+#saveRDS is a function to write a single R object to a file, and to restore it
+saveRDS(phyloseq_16S, "PH_phyloseq_16S.rds")
+
+#Takes sample data from phyloseq_16S and created a file called "metadata", available in the top right quadrant called "Data Environment", so now we can select it and view all of the metadata in a chart
+metadata <- data.frame(sample_data(phyloseq_16S)) 
+
+##ASV table containing abundances of each ASV
+#The column headers contain full ASV sequences, row names indicate sample names, and observations show ASV counts
+ASV_table <- data.frame(otu_table(phyloseq_16S)) 
+#Running this gives a summary look at how many samples, OTU, taxa etc. just checking to see how things have changed since the last run
+phyloseq_16S
+#Remove archea and unassigned
+phyloseq_16s_bact<-subset_taxa(phyloseq_16S, Kingdom == "d__Bacteria")
+#Summarize to verify that archea was removed and only bacteria remains, so expect to see a decline in taxa groups identified
+phyloseq_16s_bact 
+
+#Removing the mitochondria and chloroplasts, "!" means to exclude or remove
+phyloseq_16s_bact2 <-subset_taxa(phyloseq_16s_bact, Family!= "Mitochondria" | 
+is.na(Family) & Class!="Chloroplast" | is.na(Class) )
+
+#summarize
+phyloseq_16s_bact2
+#Look at how many reads are in each sample
+phyloseq_16S_no_blank <- subset_samples(phyloseq_16s_bact2, sample_name != "Blank" & sample_name != "23-F26" & sample_name != "22-R15"& sample_name != "22-R12"
+                                        & sample_name != "23-F121" & sample_name != "22-R13" & sample_name != "23-F72"  & sample_name != "23-F73"
+                                       & sample_name != "23-F124"  & sample_name != "23-F66") #get rid of blanks/controls, + samples that have really low otu values because the confidence intervals can't go lower than 0 
+
+sort(colSums(otu_table(phyloseq_16S_no_blank)))
+#Note: ASV's and OTU's are almost used interchangeably here, although they are slightly different, as ASV's are considered better for precision applications
+
+#changed column names from asv_table to ASV_table
+colnames(ASV_table) <- colnames(asv_table) 
+
+##Taxonomic table containing taxonomy for each ASV sequence
+#Row names contain full ASV sequences whereas columns show taxonomic identification at different resolutions
+#Most, but not all ASVs will be identified down to genus level
+taxa_table <- data.frame(tax_table(phyloseq_16S_no_blank))  
+
+```
+
+# Taxonomy Subset
+
+We are sub-setting here for bacteria only, and filtering out mtDNA and chloroplast DNA. Include a decontamination step if data set has blanks requiring removal. 
+
+: Note: We also took the opportunity to remove UNK/Mansfield locations from here, for now. - Don't link I need this yet
+
+```{r, echo=FALSE}
+#Running this gives a summary look at how many samples, OTU, taxa etc. just checking to see how things have changed since the last run
+phyloseq_16S
+#Remove archea and unassigned
+phyloseq_16s_bact<-subset_taxa(phyloseq_16S, Kingdom == "d__Bacteria")
+#Summarize to verify that archea was removed and only bacteria remains, so expect to see a decline in taxa groups identified
+phyloseq_16s_bact 
+
+#Removing the mitochondria and chloroplasts, "!" means to exclude or remove
+phyloseq_16s_bact2 <-subset_taxa(phyloseq_16s_bact, Family!= "Mitochondria" | 
+is.na(Family) & Class!="Chloroplast" | is.na(Class) )
+
+#summarize
+phyloseq_16s_bact2
+```
+
+
+# Rarefy data
+
+Select a threshold to rarefy to, if applicable. **Rarefaction** is the process of selecting a specific number of samples that is equal or less than the number of samples in the smallest sample, and then randomly discarding reads from larger samples until the number of remaining samples is equal to the threshold. 
+
+
+```{r, echo=FALSE}
+#Look at how many reads are in each sample
+phyloseq_16S_no_blank <- subset_samples(phyloseq_16s_bact2, sample_name != "Blank" & sample_name != "23-F26" & sample_name != "22-R15"& sample_name != "22-R12"
+                                        & sample_name != "23-F121" & sample_name != "22-R13" & sample_name != "23-F72"  & sample_name != "23-F73"
+                                         & sample_name != "23-F124"  & sample_name != "23-F66") #get rid of blanks/controls, + samples that have really low otu values because the confidence intervals can't go lower than 0 
+
+sort(colSums(otu_table(phyloseq_16S_no_blank)))
+
+```
+
+
+# Alpha Diversity Metrics
+
+**Alpha diversity** measures the diversity within a single sample, reflecting the taxonomic richness and distribution of those microbial taxa groups within a sample.
+
+: Note that we are using the rarefied data for alpha diversity comparison. Rarefaction adjusts for varying library sizes, therefore adjusting subsamples to equal size to aid in alpha diversity comparison.
+
+Exported out the subsetted moose samples to run through the MVC moose code (MVCMoose16s7-17-24.Rmd)
+
+```{r}
+#Make richness table with diversity indices
+alpha_full <- data.frame(estimate_richness(phyloseq_16S_no_blank, split = TRUE,
+measures = NULL))
+
+#alpha_full to alpha
+alpha<-alpha_full
+
+#create column in alpha to join by sample name
+alpha<- tibble::rownames_to_column(alpha, "sample_name")
+
+#Remove x from names
+alpha$sample_name<-gsub("X","", as.character(alpha$sample_name))
+
+row.names(alpha) <- alpha$sample_name
+
+#join metadata to species richness data 
+meta<-data.frame(sample_data(phyloseq_16S_no_blank))
+
+
+#create a file to run ANOVA and run plots from
+alpha_meta<- cbind(alpha, meta) 
+write.csv(alpha_meta, file = "CombinedMooseDeerAlpha.csv")
+```
+
+# Plots for Alpha Diversity
+
+Compare alpha diversity between study sites, as well as between cecal and fecal samples using the following indices:
+* **Shannon-Weiner diversity index**, to measure diversity of taxa within a community, sensitive to species richness
+* **Simpson diversity index**, which takes into account the number of taxa present, as well as the relative abundance of each species
+* Richness
+
+```{r alpha diversity}
+library(emmeans)
+library(lme4)
+library(lmerTest)
+combo <- read.csv("CombinedMooseDeerAlphau.csv") 
+moose<-subset(combo, Species =="Moose")
+AK<-subset(moose, Region =="Alaska")
+INW<-subset(moose, Region =="Inland NW")
+rumen<-subset(moose, Sample.Type =="Rumen")
+cecum<-subset(moose, Sample.Type =="Cecum")
+fecal<-subset(moose, Sample.Type =="Colon")
+as.factor(moose$Name)
+as.factor(moose$Sample.Type)
+moose$Sample.Type <- relevel(factor(moose$Sample.Type), ref="Rumen")
+#moose$Region <- relevel(moose$Region, ref="Alaska")
+withname<-lmer(Shannon~Region+Sample.Type+(1|Name), data=moose)
+summary(withname)
+anova(withname)
+
+
+confint(withname)
+emmeans(withname,~Region)
+emmeans(withname,~Sample.Type)
+withname<-lmer(Shannon~Sample.Type+(1|Name), data=AK)
+summary(withname)
+confint(withname)
+#emmeans(withname,~Region)
+#Shannon ANOVA for study sites
+#anova_shannon_study_site <- aov(Shannon ~ Region+Sample.Type+Sample.Type*Region, data=moose)
+#summary
+#summary(anova_shannon_study_site)
+tapply(moose$Observed, moose$Region, mean)
+tapply(moose$Observed, moose$Region, sd)
+hist(AK$Observed)
+kruskal.test(Shannon ~ Region, data=moose)
+kruskal.test(Observed ~ Region, data=moose)
+moose$Sample.Type <- relevel(factor(moose$Sample.Type), ref="Cecum")
+withname<-lmer(Observed~Region+Sample.Type+ (1|Name), data=moose)
+#withname<-glm(Observed~Region+Sample.Type+Sample.Type*Region, data=moose)
+anova(withname)
+summary(withname)
+confint(withname)
+emmeans(withname,~Region)
+
+#withname<-lmer(Observed~Sample.Type*Region+(1|Name), data=moose)
+#summary(withname)
+confint(withname)
+emmeans(withname,~Sample.Type)
+citation("emmeans")
+anov.type<-aov(Observed~Region, data=fecal)
+summary(anov.type)
+anov.type<-aov(Observed~Sample.Type, data=INW)
+summary(anov.type)
+tapply(AK$Observed, AK$Sample.Type, mean)
+sqrt(1.376/2)
+sqrt(4.69122/6)
+
+tuke<-aov(Shannon~Sample.Type, data = INW)
+TukeyHSD(tuke)
+```
+```{r comparing variance}
+library(car)
+moose<-subset(combo, Species =="Moose")
+AK<-subset(moose, Region =="Alaska")
+INW<-subset(moose, Region =="Inland NW")
+rumen<-subset(INW, Sample.Type =="Rumen")
+cecum<-subset(INW, Sample.Type =="Cecum")
+fecal<-subset(INW, Sample.Type =="Colon")
+var(fecal$Shannon)
+
+
+leveneTest(Shannon~Sample.Type, data=moose)
+leveneTest(Observed~Region, data=fecal)
+tapply(moose$Shannon, moose$Sample.Type, range)
+
+leveneTest(Shannon ~ Sample.Type, data=AK)
+leveneTest(Observed ~ Sample.Type, data=AK)
+
+leveneTest(Shannon ~ Sample.Type, data=INW)
+leveneTest(Observed ~ Sample.Type, data=INW)
+
+leveneTest(Shannon ~ Region, data=fecal)
+leveneTest(Observed ~ Region, data=fecal)
+
+tapply(INW$Shannon, INW$Sample.Type, range)
+6.058-0.5135
+2.3384-0.4141
+5.8379-0.4812
+ak<-c(5.445,1.9243,5.3567)
+5.36-4.609
+5.199-4.1244
+5.578-3.888
+inw<-c(0.751,1.0746,1.69)
+wilcox.test(Observed ~Region, data=moose)
+
+```
+```{r}
+
+
+moose$SampleType<-ordered(moose$Sample.Type, levels = c("Rumen", "Cecum", "Colon"))
+#small<-subset(moose, Name =="AK3" & Name =="AK4")
+#Construct aesthetic map using Shannon diversity index
+shannon_conc <- 
+  ggplot(moose, aes(SampleType, Shannon, fill=SampleType)) +
+      geom_violin() +
+   scale_fill_manual(values=c("deepskyblue3", "chartreuse4","lightgray"))+
+    geom_boxplot(width=0.1, color="black", alpha=0.1) +
+  # geom_jitter(position = position_jitterdodge(jitter.width = 0)) + 
+  facet_wrap(~Region)+
+  ylab("Shannon Index")+
+  xlab("Gastrointestinal Organ")+
+   theme_bw()
+
+shannon_conc  + theme(text=element_text(size=14))
+
+#Construct aesthetic map using Simpson diversity index 
+simpson_conc <- 
+  ggplot(moose, aes(SampleType, Simpson, fill=SampleType)) +
+   geom_boxplot() +
+    facet_wrap(~Region)+
+    scale_fill_manual(values=c("deepskyblue3", "chartreuse4","lightgray"))+
+  theme_bw()
+
+simpson_conc + labs(title="Simpson Index by Sample Type") + theme(text=element_text(size=10)) 
+
+#Construct aesthetic map using Richness
+richness_conc <- 
+  ggplot(moose, aes(SampleType, Observed, fill=SampleType)) +
+  geom_violin() +
+  geom_boxplot(width=0.1, color="black", alpha=0.1) +
+    facet_wrap(~Region)+
+  #  geom_jitter(position = position_jitterdodge(jitter.width = 0)) + 
+    ylab("Microbial Richness")+
+  xlab("Gastrointestinal Organ")+
+  scale_fill_manual(values=c("deepskyblue3", "chartreuse4","lightgray"))+
+  theme_bw()
+
+richness_conc  + theme(text=element_text(size=14))
+
+```
+
+```{r beta diversity}
+both<-read.xlsx("Top10Both2.xlsx", sheet="both")
+aaahhh<-lm(Abundance~Sample+Location, data=both)
+summary(aaahhh)
+percentages_MVC<-read.xlsx("Top10Both2.xlsx", sheet = "AK")
+percentages_In<-read.xlsx("Top10Both2.xlsx", sheet = "IN")
+rumen<-subset(both, Sample=="Rumen")
+cecum<-subset(both, Sample=="Cecum")
+colon<-subset(both, Sample=="Fecal")
+
+Osc<-subset(percentages_MVC, Family=="Oscillospiraceae")
+lac<-subset(percentages_MVC, Family=="Lachnospiraceae")
+chr<-subset(percentages_MVC, Family=="Christensenellaceae")
+ent<-subset(percentages_MVC, Family=="Enterobacteriaceae")
+clos<-subset(percentages_MVC, Family=="Clostridia_UCG-014")
+prev<-subset(percentages_MVC, Family=="Prevotellaceae")
+rik<-subset(percentages_MVC, Family=="Rikenellaceae")
+
+murder<-aov(Abundance ~ Sample_Type, data = rik)
+summary(murder)
+
+murder<-TukeyHSD(aov(Osc$Abundance ~ Osc$Sample_Type))
+print(murder)
+
+tapply(Osc$Abundance, Osc$Sample_Type, sd)
+#14.008960  2.259640  5.604313 
+2.259640/sqrt(5)
+aggregate(colon$Abundance, list(colon$Family1), FUN=sd) 
+```
+```{r f/b ratio}
+ratio<-read.xlsx("Top10Both.xlsx", sheet = "table")
+ratio$GI<-ordered(ratio$GI, levels = c("Rumen", "Cecum", "Colon"))
+both<-read.xlsx("Top10Both.xlsx", sheet="both")
+ratio2<-subset(both, Phylum== c("Firmicutes","Bacteroidota"))
+firm<-subset(ratio2, Phylum== "Firmicutes")
+bact<-subset(ratio2, Phylum== "Bacteroidota")
+tapply(bact$Abundance, bact$Sample, mean)
+bact2<-c(3.9842633, 0.6135971, 1.9175144)
+tapply(firm$Abundance, firm$Sample, mean)
+firm2<-c(7.434488, 5.215939, 5.014039)
+ratio2$Sample<-ordered(ratio2$Sample, levels = c("Rumen", "Cecum", "Colon"))
+ratio2$Phylum<-ordered(ratio2$Phylum, levels = c("Firmicutes","Bacteroidota"))
+summary(glm(Ratio~location, data=ratio))
+summary(aov(Ratio~location+GI, data=ratio))
+summary(aov(Abundance~location, data=ratio2))
+TukeyHSD(aov(Ratio~GI+location, data=ratio))
+
+chisq.test(firm2, bact2)
+
+ggplot(ratio, aes(x=location, y=Ratio, fill=GI)) + 
+  geom_bar(stat = "identity", position="dodge")+
+  scale_fill_manual(values=natparks.pals("RockyMtn", 3))+
+  theme_bw()
+
+ggplot(ratio2, aes(x=Sample, y=Abundance, fill=Phylum)) + 
+  facet_grid(~Location)+
+  geom_boxplot()+
+  # geom_bar( stat="identity", position="dodge")+
+  scale_fill_manual(values=natparks.pals("RockyMtn", 2))+
+  ylab("Relative Abundance (%)")+
+  xlab("Gastrointestinal Organ")+
+  theme_bw()+
+   theme(text=element_text(size=14))
+
+```
