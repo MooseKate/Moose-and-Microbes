@@ -1,0 +1,1124 @@
+---
+title: "subsetting all the shit"
+author: "a dumbass"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::downcute:
+    highlight: tango
+    toc: 3
+    toc_float: yes
+    number_sections: true
+    code_folding: show
+    code_download: true
+subtitle: "Reproducible Report"
+link-citations: yes
+fontsize: 12pt
+bibliography: references.bib
+csl: plos-genetics.csl
+---
+
+```{r packages, echo=FALSE, warning=FALSE, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = './')
+library(BiocManager)
+library(devtools)
+#install.packages("devtools")
+#install.packages("devtools")
+
+#BiocManager::install("dada2")
+library(dada2)
+#BiocManager::install("DECIPHER", force=TRUE)
+library(DECIPHER)
+#install.packages("phangorn")
+library(phangorn)
+#BiocManager::install("phyloseq", force=TRUE)
+library(phyloseq)
+#BiocManager::install("decontam")
+library(decontam)
+#install.packages("tidyverse")
+library(tidyverse)
+library(dplyr)
+#BiocManager::install("multtest", force=TRUE)
+#devtools::install_github("gauravsk/ranacapa")
+library(ranacapa)
+#BiocManager::install("genefilter")
+library(genefilter)
+#install.packages("BiodiversityR")
+library(BiodiversityR)
+library(vegan)
+library(reshape2)
+#devtools::install_github("jbisanz/qiime2R")
+library(qiime2R)
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("parallelDist")
+library(parallelDist)
+
+#Install the following to use National Parks color palette for plots
+#install.packages("devtools")
+#devtools::install_github("katiejolly/nationalparkcolors")
+library(NatParksPalettes)
+
+#Install the following to use Knit to PDF option:
+#install.packages(tinytex)
+#tinytex::install_tinytex()
+
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+library(kableExtra)
+
+#Install the following to use Knit to PDF option:
+#install.packages(tinytex)
+#tinytex::install_tinytex()
+
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+library(lmerTest)
+cite(lmerTest)
+
+## Cite all packages and save into a .bib file titled "packages.bib".
+knitr::write_bib(.packages(), file = "packages.bib")
+```
+
+```{r setup, include = FALSE, cache = FALSE, message = FALSE}
+
+# Require knitr for setting up global options
+require('knitr')
+
+# Set global options
+knitr::opts_chunk$set(echo = TRUE)
+
+# Text results
+opts_chunk$set(echo = TRUE, warning = TRUE, message = TRUE, include = TRUE)
+
+## Code decoration
+opts_chunk$set(tidy = TRUE, tidy.opts = list(blank = FALSE, width.cutoff = 60),
+    highlight = TRUE)
+
+# Caching code
+opts_chunk$set(cache = 2, cache.path = "cache/")
+
+# Saves plots in png and pdf format at 300 dpi in folder "generated_plots"
+opts_chunk$set(fig.path = "./generated_plots/", dev = c("png", "pdf"),
+    dpi = 300)
+
+# Place figures as close as possible to code in which it is called
+opts_chunk$set(fig.pos = "H")
+
+```
+
+# Downstream Analysis in R
+
+## Global Options
+**Be sure to set up your project this workflow by establishing a working directory and global code chunk options in your second code chunk:*
+
+## Input QIIME2 Files
+QIIME2 artifacts were uploaded into R RStudio 4.2.2 for simplified downstream filtering and analyses.
+
+Load non-rarefied QIIME2 metadata file: "SageGrouse_metadata.csv"
+
+```{r import_files_r}
+#This is extracting embedded data and object metadata into an R session, in other words, asking R to pull only the data from the list and put it in an asv table, displaying species and quantity
+SVs <- qiime2R::read_qza("./table.qza")
+#
+#"$" allows you to access a single variable in a data set
+asv_table<-(SVs$data)
+#
+# Save data frame into "Asv_table
+Asv_table<-data.frame(asv_table)
+#
+#change column name in new table
+colnames(Asv_table) <- colnames(asv_table) 
+#
+#Reading in evolutionary tree, breaking down taxonomic ranks
+tree<- qiime2R::read_qza("./sepp-tree.qza") 
+#
+#Save tree data into vector named "Tree"
+Tree<-tree$data#
+##Reading in Metadata
+Metadata_final <- read.csv("./Metadata.csv")
+#
+#Copy only the sample names as a character list, and set them as the row labels for the metadata sheet, identifying that "sample_name" is not a number
+metadata_finalnames <- as.character(Metadata_final$sample_name)
+row.names(Metadata_final) <- Metadata_final$sample_name
+#
+```
+
+```{r metadata}
+# make table with knitr and KableExtra, use "scroll_box" option to add a scroll bar due to the size of this table
+knitr::kable(Metadata_final, caption = "Table 1. Metadata") %>%
+    kable_styling(c("striped", "scale_down", "condensed")) %>% scroll_box(width = "750px", height = "500px") 
+
+```
+
+Next, save taxonomy .qza's into vectors as well.
+```{r Qiime2_taxonomy}
+# Read taxonomy .qza into vector
+taxonomy<-read_qza("./taxonomy.qza") 
+#
+#When taxonomy is imported, a single string is returned along with a confidence score. For many analyses, we will want to break up this string, and for that purpose, the parse_taxonomy() function is provided
+taxonomy<-qiime2R::parse_taxonomy(taxonomy$data)
+#
+#Again, convert names to characters, so they will now be read as characters rather than data values
+taxonomy$Kingdom <- as.character(taxonomy$Kingdom) 
+taxonomy$Phylum <- as.character(taxonomy$Phylum)
+taxonomy$Class <- as.character(taxonomy$Class)
+taxonomy$Order <- as.character(taxonomy$Order)
+taxonomy$Family <- as.character(taxonomy$Family)
+taxonomy$Genus <- as.character(taxonomy$Genus)
+taxonomy$Species <- as.character(taxonomy$Species)
+taxonomy <- as.matrix(taxonomy)
+```
+
+## Create Phyloseq Object {#phyloseq}
+
+Create a phyloseq object using all of the files we got from QIIME2. A **phyloseq object** is a data format commonly used for microbiome data in R.
+
+```{r phyloseq_object}
+#Note that this object is created with the non-rarefied data (uses the ASV table with unique sequences we pulled from out dada2 output at start of second chunk)
+phyloseq_16S <- phyloseq::phyloseq(otu_table(Asv_table, taxa_are_rows = TRUE, 
+errorIfNULL = TRUE), sample_data(Metadata_final), tax_table(taxonomy), 
+phy_tree(Tree))
+#
+#Check to make sure your phyloseq object was properly loaded, if so, the run will summarize the phyloseq object in your console, showing the number of ASVs and samples contained in the object. Note that it is useful to periodically summarize the object to ensure that all desired information is still available
+#phyloseq_16S  
+#
+#saveRDS is a function to write a single R object to a file. To restore the file back into an object, use command "readRDS()"
+saveRDS(phyloseq_16S, "PH_phyloseq_16S.rds")
+#
+#Takes sample data from phyloseq_16S and created a file called "metadata", available in the top right quadrant called "Data Environment", so now we can select it and view all of the metadata in a chart
+metadata <- data.frame(sample_data(phyloseq_16S)) 
+#
+##ASV table containing abundances of each ASV
+#The column headers contain full ASV sequences, row names indicate sample names, and observations show ASV counts
+ASV_table <- data.frame(otu_table(phyloseq_16S)) 
+#
+#changed column names from asv_table to ASV_table
+colnames(ASV_table) <- colnames(Asv_table) 
+#
+##Taxonomic table containing taxonomy for each ASV sequence
+#Row names contain full ASV sequences whereas columns show taxonomic identification at different resolutions
+#Most, but not all ASVs will be identified down to genus level
+taxa_table <- data.frame(tax_table(phyloseq_16S))
+#
+knitr::kable(taxa_table, caption = "Table 2. Initial Taxonomy") %>%
+    kable_styling(c("striped", "scale_down", "condensed")) %>% scroll_box(width = "750px", height = "500px") 
+```
+
+### Decontaminating Data & Taxonomy Subset {#decontam}
+
+We are sub-setting here for bacteria only, and filtering out mtDNA and chloroplast DNA.
+
+**Note: We also took the opportunity to remove UNK/Mansfield locations from here, for now due to low sample counts.**
+
+```{r decontam}
+#Running this gives a summary look at how many samples, OTU, taxa etc. just checking to see how things have changed since the last run
+phyloseq_16S 
+#
+#Remove archea and unassigned
+phyloseq_16s_bact<-subset_taxa(phyloseq_16S, Kingdom == "d__Bacteria")
+#Summarize to verify that archea was removed and only bacteria remains, so expect to see a decline in taxa groups identified
+phyloseq_16s_bact 
+#
+#Removing the mitochondria and chloroplasts, "!" means to exclude or remove
+phyloseq_16s_bact2 <-subset_taxa(phyloseq_16s_bact, Family!= "Mitochondria" | 
+is.na(Family) & Class!="Chloroplast" | is.na(Class) )
+#
+#summarize.
+
+phyloseq_16s_bact2
+
+```
+### Rarefy data {#rarefy}
+
+Here, we select a threshold to rarefy to. **Rarefaction** is the process of selecting a specific number of samples that is equal or less than the number of samples in the smallest sample, and then randomly discarding reads from larger samples until the number of remaining samples is equal to the threshold. 
+
+```{r rarefy, echo = T, results = 'hide'}
+#Look at how many reads are in each sample
+sort(colSums(otu_table(phyloseq_16s_bact2)))
+#Remove all samples that did not meet 2500 threshold
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16s_bact2, sample_name != "21-R12")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "23-F26")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "22-R15 ")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "22-R12")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "23-F121")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank4.4D")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "22-R13")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "23-F72")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "23-F66")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank4.4G")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank4.4C")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank5.5C")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "23-F73")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank5.5G")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "23-F124")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank4.4E")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank5.5H")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank4.4F")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank5.5E")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank5.5D")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank5.5F")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank4.4H ")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "Blank6")
+#
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "Blank7")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "Blank8")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "Blank4")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "Blank1")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "Blank2")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "Blank3")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "Blank5")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "22-R15")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "12578.blank4.4H")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "PCR_Pos1")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "PCR_Pos2")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "PCR_Neg1")
+phyloseq_16S_rarifed <- subset_samples(phyloseq_16S_rarifed, sample_name != "PCR_Neg2")
+#Summarize to verify that samples were removed, as well as sampling depth = 2500
+sort(colSums(otu_table(phyloseq_16S_rarifed)))
+#
+```
+```{r rarefy, echo = T, results = 'hide'}
+#Look at how many reads are in each sample
+sort(colSums(otu_table(phyloseq_16s_bact2)))
+
+Metadata_reduced <- read.csv("./Metadata.csv")
+#Remove all samples that did not meet 2500 threshold
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "21-R12")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "23-F26")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "22-R15 ")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "22-R12")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "23-F121")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank4.4D")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "22-R13")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "23-F72")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "23-F66")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank4.4G")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank4.4C")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank5.5C")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "23-F73")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank5.5G")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "23-F124")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank4.4E")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank5.5H")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank4.4F")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank5.5E")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank5.5D")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank5.5F")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank4.4H ")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "Blank6")
+#
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "Blank7")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "Blank8")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "Blank4")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "Blank1")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "Blank2")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "Blank3")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "Blank5")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "22-R15")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "12578.blank4.4H")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "PCR_Pos1")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "PCR_Pos2")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "PCR_Neg1")
+Metadata_reduced <- subset(Metadata_reduced, sample_name != "PCR_Neg2")
+Metadata_reduced$sample_name<-gsub("-",".", as.character(Metadata_reduced$sample_name))
+```
+# Alpha Diversity {#alpha}
+
+**Alpha diversity** measures the diversity within a single sample, reflecting the taxonomic richness and distribution of those microbial taxa groups within a sample.
+
+**Note** that we are using the rarefied data for alpha diversity comparison. Rarefaction adjusts for varying library sizes, therefore adjusting subsamples to equal size to aid in alpha diversity comparison.
+
+Prepare data for alpha diversity analyses
+```{r alpha}
+
+#Make richness table with diversity indices
+alpha_full <- data.frame(estimate_richness(phyloseq_16S_rarifed, split = TRUE,
+measures = NULL))
+#
+#alpha_full to alpha
+alpha<-alpha_full
+#
+#create column in alpha to join by sample name
+alpha<- tibble::rownames_to_column(alpha, "sample_name")
+#
+#Remove x from names
+alpha$sample_name<-gsub("X","", as.character(alpha$sample_name))
+row.names(alpha) <- alpha$sample_name
+#
+#join metadata to species richness data 
+
+meta<-data.frame(sample_data(phyloseq_16S_rarifed))
+#
+#create a file to run ANOVA and run plots from
+alpha_meta<- left_join(Metadata_reduced,alpha)
+#alpha_meta<- merge(alpha,meta)
+```
+```{r alpha_table}
+
+knitr::kable(alpha_meta, caption = "Table 3. Alpha Diversity Indices") %>%
+    kable_styling(c("striped", "scale_down", "condensed")) %>% scroll_box(width = "700px", height = "800px")
+deer<-subset(alpha_meta, Species !="Moose")
+moose<-subset(alpha_meta, Species =="Moose")
+#write.csv(deer, file = "DeerAlpha.csv")
+#write.csv(moose, file = "MooseAlpha.csv")
+```
+
+## Alpha diversity back in the separate project folders
+
+# Beta Diversity {#beta}
+
+**Beta diversity** compares microbial diversity between samples.
+
+Here, we will continue to used our rarefied data set. Prepare data for beta diversity analyses. We will look at data with rare taxa conserved (unfiltered), rare taxa removed (filtered), and log transformed.
+
+```{r subset_for_beta}
+moose_phylo<-subset_samples(phyloseq_16S_rarifed, Species=="Moose")
+deer_phylo<-subset_samples(phyloseq_16S_rarifed, Species!="Moose")
+INphylo<-subset_samples(moose_phylo, Location =="Inland NW") # separating out the two species up here because i didn't know where else to do it
+AKphylo<-subset_samples(moose_phylo, Location =="Alaska")
+MDphylo<-subset_samples(deer_phylo, Species =="Mule Deer") # separating out the two species up here because i didn't know where else to do it
+WTDphylo<-subset_samples(deer_phylo, Species !="Mule Deer")
+#moose_phylo<-data.frame(otu_table(moose_phylo))
+```
+**Prepare unfiltered data:**
+```{r beta_rarefied_data_unfiltered}
+#Transform to relative abundance
+phyloseq_16S_tr_unfiltered <- transform_sample_counts(moose_phylo, 
+function(x) x / sum(x))
+#
+#check to see that the sum for each column (each sample) is 1
+sort(colSums(otu_table(phyloseq_16S_tr_unfiltered))) 
+```
+
+**Prepare filtered data:**
+```{r beta_rarefied_data_filtered, echo=T, results='hide'}
+#This next line subsets any taxa which have a mean abundance of less than 1E-5. 
+phyloseq_16S_tr_filtered <- filter_taxa(phyloseq_16S_tr_unfiltered, function(x) mean(x) > 1e-5, TRUE)
+```
+
+**Prepare log-transformed data:**
+```{r beta_rarefied_data_log, echo=T, results='hide'}
+#Transform log, log1p(x)= log(1 +x) so as to not disrupt zero counts
+phyloseq_16S_log<-transform_sample_counts(phyloseq_16S_tr_unfiltered, function(x) log1p(x))
+```
+## Ordinations
+
+Ordination is a term for summarizing community data with the aim of transforming multivariate data in order to present it in fewer dimensions. There are many methods or series of methods of ordination.
+
+The following code applies two ordination methods:
+
+* **Principal Coordinates Analysis (PCoA) or Multidimensional scaling, MDS** - PCoA is a visualization method designed to study the similarity or difference of data based on distances other than Euclidean distances (as PCA uses). Instead, PCoA finds the potential principal components of the overall distance through dimensionality reduction. Therefore, PCoA can be used to study the similarity or difference of sample composition and observe the differences between groups.
+** maximizes linear correlation between samples
+
+* **Non-metric Multidimensional Scaling (NMDS)** - Multidimensional scaling is a means of visualizing the level of similarity of individual samples or sites of a multivariate data set (3+ variables) in a distance matrix. In comparison to metric MDS, non-metric MDS finds both a non-parametric monotonic (nonchanging; as one variable increases or decreases, the other variable does the same) relationship between the dissimilarities in the matrix and the Euclidean distances between
+
+** maximizes rank-order (non-metric) correlation between samples
+
+** rank-order approach well-suited for certain types of data, such as counts of abundance
+
+with the following metrics:
+
+* **Bray-Curtis** - Bray-Curtis is a statistical metric used in ecology to quantify the dissimilarity between sites based on counts per site. This allows us to examine the abundances of microbes shared common between sites, and the number of microbes in each. This metric ranges from 0 to 1. If both samples have the same number of microbes at the same abundance, the "dissimilarity" will equal 0.
+
+* **unweighted UniFrac** - The unweighted UniFrac distance considers only species presence and absence information, counting the fraction of branch length unique to either community. (Chen, J. et al)
+
+* **weighted UniFrac** - The weighted UniFrac distance considers the abundance information and weighs the branch length with abundance difference. (Chen, J. et al)
+```{r beta_ordinations_unfiltered, results='hide'}
+#Ordinate phylogenetic sequence data by PCoA, with distance method Bray-Curtis
+bray_PCoA_unfiltered  <- ordinate(phyloseq_16S_tr_unfiltered, "PCoA", "bray")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method Bray-Curtis
+bray_nmds_unfiltered  <- ordinate(phyloseq_16S_tr_unfiltered, "NMDS", "bray")
+#
+#Ordinate phylogenetic sequence data by PCoA, with distance method unweighted UniFrac
+uni_PCoA_unfiltered <- ordinate(phyloseq_16S_tr_unfiltered, "PCoA", "unifrac")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method unweighted UniFrac
+uni_nmds_unfiltered <- ordinate(phyloseq_16S_tr_unfiltered, "NMDS", "unifrac")
+#
+#Ordinate phylogenetic sequence data by PCoA, with distance method weighted UniFrac
+wuni_PCoA_unfiltered <- ordinate(phyloseq_16S_tr_unfiltered, "PCoA", "wunifrac")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method weighted UniFrac
+wuni_nmds_unfiltered <- ordinate(phyloseq_16S_tr_unfiltered, "NMDS", "wunifrac")
+```
+
+```{r beta_diversity_ordinations_Filtered, results='hide'}
+##Create diversity matrices, this time without rare taxa 
+#
+#Ordinate phylogenetic sequence data by PCoA, with distance method Bray-Curtis
+bray_PCoA  <- ordinate(phyloseq_16S_tr_filtered, "PCoA", "bray")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method Bray-Curtis
+bray_nmds  <- ordinate(phyloseq_16S_tr_filtered, "NMDS", "bray")
+#
+#Ordinate phylogenetic sequence data by PCoA, with distance method unweighted UniFrac
+uni_PCoA <- ordinate(phyloseq_16S_tr_filtered, "PCoA", "unifrac")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method unweighted UniFrac
+uni_nmds <- ordinate(phyloseq_16S_tr_filtered, "NMDS", "unifrac")
+#
+#Ordinate phylogenetic sequence data by PCoA, with distance method weighted UniFrac
+wuni_PCoA <- ordinate(phyloseq_16S_tr_filtered, "PCoA", "wunifrac")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method weighted UniFrac
+wuni_nmds <- ordinate(phyloseq_16S_tr_filtered, "NMDS", "wunifrac")
+```
+
+```{r beta_diversity_ordinations_log_tr, results='hide'}
+##Create diversity matrices, this time without rare taxa 
+#
+#Create diversity matrix, prefiltered relative log transformed log1p(x) 
+bray_PCoA_log  <- ordinate(phyloseq_16S_log, "PCoA", "bray")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method Bray-Curtis
+bray_nmds_log  <- ordinate(phyloseq_16S_log, "NMDS", "bray")
+#
+#Ordinate phylogenetic sequence data by PCoA, with distance method unweighted UniFrac
+uni_PCoA_log <- ordinate(phyloseq_16S_log, "PCoA", "unifrac")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method unweighted UniFrac
+uni_nmds_log <- ordinate(phyloseq_16S_log, "NMDS", "unifrac")
+#
+#Ordinate phylogenetic sequence data by PCoA, with distance method weighted UniFrac
+wuni_PCoA_log <- ordinate(phyloseq_16S_log, "PCoA", "wunifrac")
+#
+#Ordinate phylogenetic sequence data by NMDS, with distance method weighted UniFrac
+wuni_nmds_log <- ordinate(phyloseq_16S_log, "NMDS", "wunifrac")
+```
+
+
+## Plots for Beta Diversity Ordinations
+
+Create beta diversity plots utilizing the matrices established above.
+
+### Unfiltered Data
+
+#### Unfiltered Data: Study Site
+
+Plot PCoA, Bray-Curtis:
+```{r beta_site_bray_pcoa_plot_unfiltered}
+beta_otu<-sort(colSums(otu_table(moose_phylo)))
+factor(sample_data(phyloseq_16S_tr_unfiltered)$Sample_Type)
+levels(sample_data(phyloseq_16S_tr_unfiltered)$Sample_Type) = ordered(c("Rumen", "Cecum", "Colon"))
+
+Conc_bray_PCoA_plot2 <- plot_ordination(phyloseq_16S_tr_unfiltered, 
+                                         bray_PCoA_unfiltered,
+                                         color = "Sample_Type",
+                                        shape = "Location") + theme_bw()+ theme(text=element_text(size=16))
+  
+Conc_bray_PCoA_plot2 + stat_ellipse(linewidth=.85)+
+  geom_point(size=4)+
+  scale_color_manual(values=c("lightskyblue3", "darkseagreen4","gray4"))
+  #xlim(-0.5,0.5)+
+  #ylim(-0.6s,0.6)
+
+```
+
+
+Plot PCoA, Unweighted UniFrac:
+```{r beta_site_uni_pcoa_plot_unfiltered}
+site_uni_PCoA_unfiltered <- plot_ordination(phyloseq_16S_tr_unfiltered, 
+                                             uni_PCoA_unfiltered,
+                                            color = "Sample_Type",
+                                        shape = "Location") + theme_bw()+ theme(text=element_text(size=16))
+site_uni_PCoA_unfiltered + stat_ellipse() + 
+  geom_point(size=4)+
+  scale_color_manual(values=c("lightskyblue3", "darkseagreen","gray41"))
+```
+
+Plot PCoA, Weighted UniFrac:
+```{r beta_site_wuni_pcoa_plot_unfiltered}
+site_wuni_PCoA_unfiltered <- plot_ordination(phyloseq_16S_tr_unfiltered, 
+                                              wuni_PCoA_unfiltered,
+                          color = "Trial", shape = "Species") + theme_bw()
+site_wuni_PCoA_unfiltered + stat_ellipse() + 
+  labs(title = "Weighted Unifrac Dissimilarity PCoA Study Site, Unfiltered") + 
+  theme(text = element_text(size = 10))
+
+```
+
+Plot NMDS, Bray-Curtis:
+```{r beta_site_bray_nmds_plot_unfiltered}
+site_bray_NMDS_unfiltered <- plot_ordination(phyloseq_16S_tr_unfiltered, 
+                                              bray_nmds_unfiltered,
+                                                color = "Trial", shape = "Species") + theme_bw()
+
+site_bray_NMDS_unfiltered + stat_ellipse() + 
+  labs(title = "Bray-Curtis Dissimilarity NMDS Study Site, Unfiltered") + 
+  theme(text = element_text(size = 10))
+```
+
+Plot NMDS, Unweighted UniFrac: 
+```{r beta_site_uni_nmds_plot_unfiltered}
+site_uni_nmds_unfiltered <- plot_ordination(phyloseq_16S_tr_unfiltered, 
+                                         uni_nmds_unfiltered,
+                                         type = "Location",
+                                             color = "Sample_Type") + theme_bw()
+  
+site_uni_nmds_unfiltered + stat_ellipse() + 
+  labs(title = "Unifrac Dissimilarity NMDS Study Site, Unfiltered") + 
+  theme(text = element_text(size = 10))
+
+```
+
+Plot NMDS, Weighted Unifrac:
+```{r site_wuni_nmds_plot_unfiltered}
+site_wuni_PCoA_plot2 <- plot_ordination(phyloseq_16S_tr_unfiltered, 
+                                         wuni_nmds_unfiltered,
+                                       color = "Trial", shape = "Species") + theme_bw()
+  
+site_wuni_PCoA_plot2 + stat_ellipse() + 
+  labs(title = "Weighted Unifrac Dissimilarity NMDS Study Site, Unfiltered") + 
+  theme(text = element_text(size = 10))
+```
+
+# Taxonomy {#tax}
+
+Prepare data for taxonomy analysis. Since taxonomy was matched with the Silva database, we can compare what microbes are in the fecal and cecal samples, and how taxa compares between the fecal and cecal pellets, and two locations.
+# Permanova Tests
+```{r perm}
+
+#Setup tests with transformed, pre-filtered files
+#Pull otu_table out of phyloseq object
+table_gp <- data.frame(otu_table(phyloseq_16S_tr_filtered)) 
+
+#Transpose data
+flip_ps_table_gp<-t(table_gp)
+
+#Pull the sample_data metadata out of phyloseq object 
+meta_gp<- data.frame(sample_data(phyloseq_16S_tr_filtered))
+#check
+#flip_ps_table_gp [1:20, 1:10]
+#check
+#View(meta_gp) 
+#Create data matrices
+adonis_table<-data.matrix(flip_ps_table_gp)
+adon<-merge(adonis_table, meta_gp)
+
+#Set seed for study site
+set.seed(223)
+adon<-adonis2((adonis_table)~+meta_gp$Location, na.action=na.omit)
+print(adon)
+
+simple.results.anosim <- anosim(x = adonis_table, grouping = meta_gp$Sample_Type, permutations = 999)
+simple.results.anosim
+```
+```{r new pcoa}
+# Load required libraries
+library(vegan)   # for vegdist
+library(ape)     # for pcoa
+library(ggplot2)
+library(dplyr)
+
+# Assume you already have:
+# - otu_table: samples x taxa matrix (rows = samples, columns = taxa)
+# - metadata: dataframe with SampleID and Time (numeric or factor with ordering)
+
+# Step 1: Compute Bray-Curtis distance matrix
+dist_matrix <- vegdist(beta_otu, method = "bray") #og code vegdist(otu_table, method = "bray") used the sort function from above (where I separated the two species) to make the otu table 
+
+# Step 2: Run PCoA
+pcoa_result <- pcoa(dist_matrix)
+
+# Step 3: Extract first 2 PCoA axes
+pcoa_scores <- as.data.frame(pcoa_result$vectors[, 1:2])
+pcoa_scores$sample_name <- rownames(pcoa_scores)
+
+# Step 4: Merge with metadata
+pcoa_scores <- left_join(pcoa_scores, meta_gp, by = "sample_name")
+
+# Step 5: Compute centroids for each time point
+centroids <- pcoa_scores %>%
+  group_by(Location) %>%
+  group_by(Sample_Type)%>%
+  summarise(
+    PCoA1 = mean(Axis.1),
+    PCoA2 = mean(Axis.2),
+    .groups = "drop"
+  )
+
+# Step 6: Plot with trajectories
+
+centroids <- pcoa_scores %>%
+  group_by(Location, Sample_Type) %>%
+  summarize(PCoA1 = mean(Axis.1),PCoA2 = mean(Axis.2))
+
+ggplot(centroids, aes(x = PCoA1, y = PCoA2)) +
+  geom_point(aes(shape = Location, color = Sample_Type), size = 5) +
+  #geom_text(vjust = -1.5, size = 5) +
+  geom_path(aes(group = Location), arrow = arrow(length = unit(0.3, "cm")), linetype = "solid") +
+  theme_minimal()+
+  scale_color_manual(values = c("lightskyblue3", "darkseagreen4","gray4"))+
+ theme_bw()+ theme(text=element_text(size=16))
+```
+#Pairwise comparisions
+
+```{r, include=FALSE}
+
+BC.dist=vegdist(adonis_table, distance="bray")
+disp.type = betadisper(BC.dist, meta_gp$Sample_Type)
+permutest(disp.type, pairwise=TRUE, permutations=1000)
+location = betadisper(BC.dist, meta_gp$Location)
+permutest(location, pairwise=TRUE, permutations=1000)
+```
+
+
+## Phyla
+
+The following code was adapted from Courtney Buchanan's code:
+
+```{r phyla_relative_abundance, warning=FALSE}
+# Group all ASVs by phylum
+phyloseq_16S_phylum <- tax_glom(moose_phylo, taxrank = "Phylum")
+## Test % in each level top 10, 15, 20
+#
+# Identify the top 10 phylum 
+phylum_10 <- names(sort(taxa_sums(phyloseq_16S_phylum), TRUE)[1:10])
+#
+# Keep data for only the top 10 phyla
+phyloseq_16S_phylum_prune10 <- prune_taxa(phylum_10, phyloseq_16S_phylum)
+#
+# Identify the top 15 phyla 
+phylum_15 <- names(sort(taxa_sums(phyloseq_16S_phylum), TRUE)[1:15])
+#
+# Keep data for only the top 15 phyla
+phyloseq_16S_phylum_prune15 <- prune_taxa(phylum_15, phyloseq_16S_phylum)
+#
+# Identify the top 20 phyla 
+phylum_20 <- names(sort(taxa_sums(phyloseq_16S_phylum), TRUE)[1:20])
+#
+# Keep data for only the top 20 phyla
+phyloseq_16S_phylum_prune20 <- prune_taxa(phylum_20, phyloseq_16S_phylum)
+#
+# Check percentage of reads that fall within top 10 phyla, 15, 20 
+sum(sample_sums(phyloseq_16S_phylum_prune10)) / sum(sample_sums(phyloseq_16S_phylum))
+sum(sample_sums(phyloseq_16S_phylum_prune15)) / sum(sample_sums(phyloseq_16S_phylum))
+sum(sample_sums(phyloseq_16S_phylum_prune20)) / sum(sample_sums(phyloseq_16S_phylum))
+#
+# top 10 captures most, so we will use this below
+# Make table
+phylum_all_table <- cbind(tax_table(phyloseq_16S_phylum))
+#
+#trying to re-name some phyla to other....
+phylum_new_table <- phylum_all_table
+phylum_new_table<- tibble::rownames_to_column((as.data.frame(phylum_new_table)), "ASV") #add ASV as column
+#
+phylum_new_table$Phylum1 <- phylum_new_table$Phylum #makes new column for renaming
+#
+# rename top 10
+phylum_new_table$Phylum1[phylum_new_table$ASV == "cee47dbd6c7810e033fda078a78d377d"] <- "top_10" #1
+phylum_new_table$Phylum1[phylum_new_table$ASV == "ac164649e33237f799c1ffee4f344d5d"] <- "top_10" #2
+phylum_new_table$Phylum1[phylum_new_table$ASV == "beaaaff5eb38cae1fedca5779ebdca3f"] <- "top_10" #3
+phylum_new_table$Phylum1[phylum_new_table$ASV == "ecaa0f1d2a71e76b2c58c4787ca10b41"] <- "top_10" #4
+phylum_new_table$Phylum1[phylum_new_table$ASV == "e2a9ad58bbca06a4f08085840783fbcd"] <- "top_10" #5
+phylum_new_table$Phylum1[phylum_new_table$ASV == "ba769481e813de83cbe84678905718de"] <- "top_10" #6
+phylum_new_table$Phylum1[phylum_new_table$ASV == "dd864abcc827d7c8d52f7156f65707ad"] <- "top_10" #7
+phylum_new_table$Phylum1[phylum_new_table$ASV == "d0e8b75ff5314350e4a97dd3db138f1b"] <- "top_10" #8
+phylum_new_table$Phylum1[phylum_new_table$ASV == "429ad9f2ff02c3a27527d7f2d0cbc9fe"] <- "top_10" #9
+phylum_new_table$Phylum1[phylum_new_table$ASV == "f33c1ca6142229599fbd1700ac708c25"] <- "top_10" #10
+#
+phylum_new_table$Phylum[phylum_new_table$Phylum1 !="top_10"] <- "Additional Phyla"
+#
+#make ASV row name again
+phylum_new_table1 <- tibble::column_to_rownames((as.data.frame(phylum_new_table)), "ASV") 
+#
+#need to remove Phylum1 column
+phylum_relabeled <- phylum_new_table1
+phylum_relabeled = subset(phylum_new_table1, select=-c(Phylum1))
+#
+phylum_relabeled1 <- as.matrix(phylum_relabeled)#create a matrix
+str(phylum_relabeled1)
+#try to merge into the phylum classified phyloseq object 
+phyloseq_16S_phylum_sort<-phyloseq_16S_phylum #create new object
+#
+#need to be able to upload as new taxonomy table 
+tax_table(phyloseq_16S_phylum_sort) <- phylum_relabeled1
+```
+### Phyla: Study Site
+
+
+## Class
+
+```{r class_relative_abundance, warning=FALSE}
+# Group all ASVs by class
+phyloseq_16S_class <- tax_glom(moose_phylo, taxrank = "Class")
+#
+# Identify the top 10 class 
+class_10 <- names(sort(taxa_sums(phyloseq_16S_class), TRUE)[1:10])
+#
+# Keep data for only the top 10 class
+phyloseq_16S_class_prune10 <- prune_taxa(class_10, phyloseq_16S_class)
+#
+# Identify the top 15 class
+class_15 <- names(sort(taxa_sums(phyloseq_16S_class), TRUE)[1:15])
+#
+# Keep data for only the top 15 class
+phyloseq_16S_class_prune15 <- prune_taxa(class_15, phyloseq_16S_class)
+#
+# Identify the top 20 class
+class_20 <- names(sort(taxa_sums(phyloseq_16S_class), TRUE)[1:20])
+#
+# Keep data for only the top 20 class
+phyloseq_16S_class_prune20 <- prune_taxa(class_20, phyloseq_16S_class)
+#
+# Check percentage of reads that fall within top 10, 15, 20 class
+sum(sample_sums(phyloseq_16S_class_prune10)) / sum(sample_sums(phyloseq_16S_class))
+sum(sample_sums(phyloseq_16S_class_prune15)) / sum(sample_sums(phyloseq_16S_class))
+sum(sample_sums(phyloseq_16S_class_prune20)) / sum(sample_sums(phyloseq_16S_class))
+#
+# Most diversity captured in top 10, so using this moving forward. 
+#
+# Make table
+class_all_table <- cbind(tax_table(phyloseq_16S_class))
+#
+#renaming somw classes to "other"
+class_new_table <- class_all_table
+class_new_table <- tibble::rownames_to_column((as.data.frame(class_new_table)), "ASV") #add ASV as column
+#
+class_new_table$Class1 <- class_new_table$Class#makes new column for renaming
+#
+# rename top 10
+class_new_table$Class1[class_new_table$ASV == "cee47dbd6c7810e033fda078a78d377d"] <- "top_10" #1
+class_new_table$Class1[class_new_table$ASV == "ac164649e33237f799c1ffee4f344d5d"] <- "top_10" #2
+class_new_table$Class1[class_new_table$ASV == "beaaaff5eb38cae1fedca5779ebdca3f"] <- "top_10" #3
+class_new_table$Class1[class_new_table$ASV == "2642a3f84f710a36e4bc83095337f698"] <- "top_10" #4
+class_new_table$Class1[class_new_table$ASV == "ecaa0f1d2a71e76b2c58c4787ca10b41"] <- "top_10" #5
+class_new_table$Class1[class_new_table$ASV == "e2a9ad58bbca06a4f08085840783fbcd"] <- "top_10" #6
+class_new_table$Class1[class_new_table$ASV == "384962c69cdd7b9e3bd01f030143b0b6"] <- "top_10" #7
+class_new_table$Class1[class_new_table$ASV == "dd864abcc827d7c8d52f7156f65707ad"] <- "top_10" #8
+class_new_table$Class1[class_new_table$ASV == "d0e8b75ff5314350e4a97dd3db138f1b"] <- "top_10" #9
+class_new_table$Class1[class_new_table$ASV == "ba769481e813de83cbe84678905718de"] <- "top_10" #10
+#
+class_new_table$Class[class_new_table$Class1 !="top_10"] <- "Additional Classes"
+#
+#make ASV row name again
+class_new_table1<- tibble::column_to_rownames((as.data.frame(class_new_table)), "ASV") 
+#
+#need to remove Class1 column
+class_relabeled<-class_new_table1
+class_relabeled= subset(class_new_table1, select=-c(Class1))
+class_relabeled1 <- as.matrix(class_relabeled)#create a matrix and maybe that will work?
+#try to merge into the phylum classified phyloseq object 
+phyloseq_16S_class_sort<-phyloseq_16S_class #create new object
+#new taxonomy table
+tax_table(phyloseq_16S_class_sort) <- class_relabeled1
+```
+
+
+Here, we will plot relative abundance for order. For visualization purposes, we will look at the top 10 orders as most microbes fell into these categories. 
+```{r order_relative_abundance, warning=FALSE}
+# Group all ASVs by order
+phyloseq_16S_order <- tax_glom(moose_phylo, taxrank = "Order")
+# 
+#Run the following line to see how many taxa exist. For example, for order, there are 132.
+phyloseq_16S_order
+#
+## Identify all orders. Be sure to adjust the range. For order, since there are 132 orders, adjust the range to capture all 132 orders.
+order_all <- names(sort(taxa_sums(phyloseq_16S_order), TRUE)[1:132])
+#
+# Identify the top 10 order 
+order_10 <- names(sort(taxa_sums(phyloseq_16S_order), TRUE)[1:10])
+#
+# Keep data for only the top 10 order in this object
+phyloseq_16S_order_prune10 <- prune_taxa(order_10, phyloseq_16S_order)
+#
+# Check what percentage of reads fall in the top 10 orders. Note that we can do this with the top 15, 20, etc. as well.
+sum(sample_sums(phyloseq_16S_order_prune10)) / sum(sample_sums(phyloseq_16S_order))
+#
+# Make table
+order_all_table <- cbind(tax_table(phyloseq_16S_order))
+#
+#Make Table
+order_new_table <- order_all_table
+order_new_table<- tibble::rownames_to_column((as.data.frame(order_new_table)), "ASV") #add ASV as column
+#
+order_new_table$Order1<-order_new_table$Order #makes new column for renaming
+#
+# rename to top 10
+order_new_table$Order1[order_new_table$ASV == "ac164649e33237f799c1ffee4f344d5d"] <- "top_10" #1
+order_new_table$Order1[order_new_table$ASV == "cee47dbd6c7810e033fda078a78d377d"] <- "top_10" #2
+order_new_table$Order1[order_new_table$ASV == "beaaaff5eb38cae1fedca5779ebdca3f"] <- "top_10" #3
+order_new_table$Order1[order_new_table$ASV == "80ffd60a547eca9b1cb49df58b3b209f"] <- "top_10" #4
+order_new_table$Order1[order_new_table$ASV == "2bdd097da214d4453890af6d34b2452f"] <- "top_10" #5
+order_new_table$Order1[order_new_table$ASV == "04235b7635e60adc8cae82a3f3b2b8d3"] <- "top_10" #6
+order_new_table$Order1[order_new_table$ASV == "8b77f352fd8d25b662238c15c05fa6b2"] <- "top_10" #7
+order_new_table$Order1[order_new_table$ASV == "ecaa0f1d2a71e76b2c58c4787ca10b41"] <- "top_10" #8
+order_new_table$Order1[order_new_table$ASV == "2b1f51d9406df70bb9a4a499bace04c9"] <- "top_10" #9
+order_new_table$Order1[order_new_table$ASV == "38370559a53781fc8c5f6aaa5323d956"] <- "top_10" #10
+order_new_table$Order[order_new_table$Order1 !="top_10"] <- "Additional Orders"
+#
+#make ASV row name again
+order_new_table1<- tibble::column_to_rownames((as.data.frame(order_new_table)), "ASV") 
+#
+#remove Order1 column
+order_relabeled<-order_new_table1
+order_relabeled= subset(order_new_table1, select=-c(Order1))
+#
+order_relabeled1 <- as.matrix(order_relabeled)
+#
+#try to merge into the Class classified phyloseq object 
+phyloseq_16S_order_sort<-phyloseq_16S_order#create new object so I dont ruin the 
+#
+#need to be able to upload as new taxonomy table 
+tax_table(phyloseq_16S_order_sort) <- order_relabeled1
+```
+
+
+```{r, include=FALSE}
+
+# top 10 captures most, so we will use this below
+phyloseq_16S_fam <- tax_glom(moose_phylo, taxrank = "Family")
+phyloseq_In <- subset_samples(phyloseq_16S_fam, Location == "Inland NW")
+phyloseq_AK <- subset_samples(phyloseq_16S_fam, Location == "Alaska")
+
+## Identify top 10 Phyla
+phyloseq_In_20 <- names(sort(taxa_sums(phyloseq_In), TRUE)[1:20])
+phyloseq_In_20
+phyloseq_AK_20 <- names(sort(taxa_sums(phyloseq_AK), TRUE)[1:20])
+phyloseq_AK_20
+## Keep data for only top 10 families
+phyloseq_IN_prune<- prune_taxa(phyloseq_In_20, phyloseq_In)
+phyloseq_AK_prune <- prune_taxa(phyloseq_AK_20, phyloseq_AK)
+# Make table
+all_table1 <- cbind(tax_table(phyloseq_IN_prune))
+all_table2 <- cbind(tax_table(phyloseq_AK_prune))
+#trying to re-name some phyla to other....
+fam_all_table1 <- all_table1
+fam_all_table1<- tibble::rownames_to_column((as.data.frame(fam_all_table1)), "ASV") #add ASV as column
+View(fam_all_table1)#check
+
+fam_all_table1$Family1 <- fam_all_table1$Family #makes new column for renaming
+fam_all_table1$Family1[fam_all_table1$ASV == "2bdd097da214d4453890af6d34b2452f"] <- "top_20" #1
+fam_all_table1$Family1[fam_all_table1$ASV == "3091aa0dbc7fbe655f65b51f61c78d54"] <- "top_20" #2
+fam_all_table1$Family1[fam_all_table1$ASV == "4d20c23b6a8ea0b70c925e43bf5901d8"] <- "top_20" #3
+fam_all_table1$Family1[fam_all_table1$ASV == "3102de2a43e0034c0d5ea30f4f178d6f"] <- "top_20" #4
+fam_all_table1$Family1[fam_all_table1$ASV == "8b77f352fd8d25b662238c15c05fa6b2"] <- "top_20" #5
+fam_all_table1$Family1[fam_all_table1$ASV == "8a4e873ffb564107c3e27056cafbd42f"] <- "top_20" #6
+fam_all_table1$Family1[fam_all_table1$ASV == "cee47dbd6c7810e033fda078a78d377d"] <- "top_20" #7
+fam_all_table1$Family1[fam_all_table1$ASV == "fe65890615d238fd02383c9ca3792318"] <- "top_20" #8
+fam_all_table1$Family1[fam_all_table1$ASV == "2642a3f84f710a36e4bc83095337f698"] <- "top_20" #9
+fam_all_table1$Family1[fam_all_table1$ASV == "a4ad22d7dad0d45debdce30a48b3b02a"] <- "top_20" #10
+fam_all_table1$Family1[fam_all_table1$ASV == "f645be84f45c4030599aa3c00ad15a19"] <- "top_20" #11
+fam_all_table1$Family1[fam_all_table1$ASV == "04235b7635e60adc8cae82a3f3b2b8d3"] <- "top_20" #12
+fam_all_table1$Family1[fam_all_table1$ASV == "d3313b86bca203789bf987d5aaa0e78b"] <- "top_20" #13
+fam_all_table1$Family1[fam_all_table1$ASV == "80ffd60a547eca9b1cb49df58b3b209f"] <- "top_20" #14
+fam_all_table1$Family1[fam_all_table1$ASV == "ecaa0f1d2a71e76b2c58c4787ca10b41"] <- "top_20" #15
+fam_all_table1$Family1[fam_all_table1$ASV == "41f917636a6ff526166a8163bb2b1e96"] <- "top_20" #16
+fam_all_table1$Family1[fam_all_table1$ASV == "e2a9ad58bbca06a4f08085840783fbcd"] <- "top_20" #17
+fam_all_table1$Family1[fam_all_table1$ASV == "bedab54808bec7ba26224776addd4693"] <- "top_20" #18
+fam_all_table1$Family1[fam_all_table1$ASV == "cf770b15dd490c11199c571f5376c398"] <- "top_20" #19
+fam_all_table1$Family1[fam_all_table1$ASV == "ac164649e33237f799c1ffee4f344d5d"] <- "top_20" #20
+View(fam_all_table1) # check and it worked
+fam_all_table1$Family[fam_all_table1$Family1 !="top_20"] <- "Additional Families"
+View(fam_all_table1) #check
+#make ASV row name again
+fam_all_table1<- tibble::column_to_rownames((as.data.frame(fam_all_table1)), "ASV") 
+#need to remove Order1 coulumn
+fam_relabeled1<-fam_all_table1
+fam_relabeled1= subset(fam_all_table1, select=-c(Family1))
+View(fam_relabeled1) #check-yes it worked
+str(fam_relabeled1)#check structure
+fam_relabeled1 <- as.matrix(fam_relabeled1)#create a matrix and maybe that will work?
+str(fam_relabeled1)#check structure now
+#try to merge into the phylum classified phyloseq object 
+phyloseq_16S_fam_sort1<-phyloseq_In#create new object so I dont ruin the old one...
+phyloseq_16S_fam_sort1
+#need to be able to upload as new taxonomy table 
+tax_table(phyloseq_16S_fam_sort1) <- fam_relabeled1 #try matrix one... it seemed to work 
+#Once I get formatting should work here on.... 
+# Transform abundances to percentages
+fam_all_merge1 <- merge_samples(phyloseq_16S_fam_sort1, "Sample_Type")
+fam_all_percent1 <- transform_sample_counts(fam_all_merge1, function(x) 100 * x/sum(x))
+fam_all_percent1
+fam_abundance_sort1 <- plot_bar(fam_all_percent1, fill = "Family") + xlab("Gastrointestinal Organ") + ylab("Relative Abundance (%)") +  
+    scale_x_discrete(labels = c("Rumen", "Cecum", "Colon"))+
+     scale_fill_manual(values=natparks.pals("RockyMtn", 20)) +
+    ylab("Relative Abundance (%)") + 
+    ggtitle("Inland NW")+
+    theme_bw()+
+   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+fam_abundance_sort1 + theme(text = element_text(size = 12))
+#########################################################################################################################################################
+fam_all_table2 <- all_table2
+fam_all_table2<- tibble::rownames_to_column((as.data.frame(fam_all_table2)), "ASV") #add ASV as column
+View(fam_all_table2)#check
+
+fam_all_table2$Family1 <- fam_all_table2$Family #makes new column for renaming
+fam_all_table2$Family1[fam_all_table2$ASV == "2bdd097da214d4453890af6d34b2452f"] <- "top_20" #1
+fam_all_table2$Family1[fam_all_table2$ASV == "3091aa0dbc7fbe655f65b51f61c78d54"] <- "top_20" #2
+fam_all_table2$Family1[fam_all_table2$ASV == "4d20c23b6a8ea0b70c925e43bf5901d8"] <- "top_20" #3
+fam_all_table2$Family1[fam_all_table2$ASV == "3102de2a43e0034c0d5ea30f4f178d6f"] <- "top_20" #4
+fam_all_table2$Family1[fam_all_table2$ASV == "8a4e873ffb564107c3e27056cafbd42f"] <- "top_20" #5
+fam_all_table2$Family1[fam_all_table2$ASV == "e14f35e77d491dd6e8a7619f5f3b8c45"] <- "top_20" #6
+fam_all_table2$Family1[fam_all_table2$ASV == "cee47dbd6c7810e033fda078a78d377d"] <- "top_20" #7
+fam_all_table2$Family1[fam_all_table2$ASV == "fe65890615d238fd02383c9ca3792318"] <- "top_20" #8
+fam_all_table2$Family1[fam_all_table2$ASV == "2b1f51d9406df70bb9a4a499bace04c9"] <- "top_20" #9
+fam_all_table2$Family1[fam_all_table2$ASV == "dd864abcc827d7c8d52f7156f65707ad"] <- "top_20" #10
+fam_all_table2$Family1[fam_all_table2$ASV == "04235b7635e60adc8cae82a3f3b2b8d3"] <- "top_20" #11
+fam_all_table2$Family1[fam_all_table2$ASV == "d3313b86bca203789bf987d5aaa0e78b"] <- "top_20" #12
+fam_all_table2$Family1[fam_all_table2$ASV == "38370559a53781fc8c5f6aaa5323d956"] <- "top_20" #13
+fam_all_table2$Family1[fam_all_table2$ASV == "74f360c17fd5551faba788990ba35e8d"] <- "top_20" #14
+fam_all_table2$Family1[fam_all_table2$ASV == "80ffd60a547eca9b1cb49df58b3b209f"] <- "top_20" #15
+fam_all_table2$Family1[fam_all_table2$ASV == "c1e1874e83a9e6bd9509862ec9a25805"] <- "top_20" #16
+fam_all_table2$Family1[fam_all_table2$ASV == "c6f1e03b8fc0bee210607216c56699a9"] <- "top_20" #17
+fam_all_table2$Family1[fam_all_table2$ASV == "beaaaff5eb38cae1fedca5779ebdca3f"] <- "top_20" #18
+fam_all_table2$Family1[fam_all_table2$ASV == "cf770b15dd490c11199c571f5376c398"] <- "top_20" #19
+fam_all_table2$Family1[fam_all_table2$ASV == "ac164649e33237f799c1ffee4f344d5d"] <- "top_20" #20
+View(fam_all_table2) # check and it worked
+fam_all_table2$Family[fam_all_table2$Family1 !="top_20"] <- "Additional Families"
+View(fam_all_table2) #check
+#make ASV row name again
+fam_new_table2<- tibble::column_to_rownames((as.data.frame(fam_all_table2)), "ASV") 
+#need to remove Order1 coulumn
+fam_relabeled2<-fam_new_table2
+fam_relabeled2= subset(fam_new_table2, select=-c(Family1))
+View(fam_relabeled2) #check-yes it worked
+str(fam_relabeled2)#check structure
+fam_relabeled2 <- as.matrix(fam_relabeled2)#create a matrix and maybe that will work?
+str(fam_relabeled2)#check structure now
+#try to merge into the phylum classified phyloseq object 
+phyloseq_16S_fam_sort2<-phyloseq_AK#create new object so I dont ruin the old one...
+phyloseq_16S_fam_sort2
+#need to be able to upload as new taxonomy table 
+tax_table(phyloseq_16S_fam_sort2) <- fam_relabeled2 #try matrix one... it seemed to work 
+#Once I get formatting should work here on.... 
+# Transform abundances to percentages
+fam_all_merge2 <- merge_samples(phyloseq_16S_fam_sort2, "Sample_Type")
+fam_all_percent2 <- transform_sample_counts(fam_all_merge2, function(x) 100 * x/sum(x))
+fam_all_percent2
+
+fam_abundance_sort2 <- plot_bar(fam_all_percent2, fill = "Family") + xlab("Gastrointestinal Organ") + ylab("Relative Abundance (%)") +  
+     scale_x_discrete(labels = c("Rumen", "Cecum", "Colon"))+
+        scale_fill_manual(values=natparks.pals("RockyMtn", 20)) +
+    ylab("Relative Abundance (%)") + 
+    ggtitle("Alaska")+
+    theme_bw()+
+   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+fam_abundance_sort2 + theme(text = element_text(size = 12))
+
+
+fam_abundance_sort1
+fam_abundance_sort2
+```
+
+```{r, include=FALSE}
+library(tidytext)
+library("openxlsx") 
+
+percentages_In<-psmelt(fam_all_percent1)
+percentages_AK<-psmelt(fam_all_percent2)
+attempt<- data.frame(sample_data(percentages_In))
+Top10both2=createWorkbook() # create a new workbook for the final dataframe
+addWorksheet(Top10both2,sheetName="IN")
+writeData(Top10both2,percentages_In,sheet="IN",startRow=1,startCol=1,colNames=TRUE)
+addWorksheet(Top10both2,sheetName="AK")
+writeData(Top10both2,percentages_AK,sheet="AK",startRow=1,startCol=1,colNames=TRUE)
+Fname=paste0(c("Top10both2.xlsx"),collapse="")
+saveWorkbook(Top10both2,Fname, overwrite=FALSE)
+```
+```{r abundances plots}
+IN_Plot  <- ggplot(data= percentages_In, aes(x=Sample,y=Abundance, fill=reorder(Family, Abundance)))+ 
+  scale_x_discrete(labels = c("Rumen", "Cecum", "Colon"))+
+   geom_bar( stat="identity", position="stack", colour = "black")+
+  scale_fill_manual("Families Identified", values=natparks.pals("RockyMtn", 20)) +
+ ylab("Relative Abundance (%)") + 
+    xlab("Gastrointestinal Organ") + 
+    ggtitle("Inland NW")+
+    theme_bw()+
+   theme(text=element_text(size=16), axis.text.x = element_text(angle = 45, hjust = 1))
+
+AK_Plot  <- ggplot(data= percentages_AK, aes(x=Sample,y=Abundance, fill=reorder(Family, Abundance)))+ 
+  scale_x_discrete(labels = c("Rumen", "Cecum", "Colon"))+
+   geom_bar( stat="identity", position="stack", colour = "black")+
+  scale_fill_manual("Families Identified", values=natparks.pals("RockyMtn", 20)) +
+   ylab("Relative Abundance (%)") + 
+    xlab("Gastrointestinal Organ") + 
+    ggtitle("Alaska")+
+    theme_bw()+
+   theme(text=element_text(size=16), axis.text.x = element_text(angle = 45, hjust = 1))
+ 
+IN_Plot
+AK_Plot
+```
+# References
+
+<div id="refs"></div>
+
+---
+nocite: '@*'
+...
+
+# Appendix 1
+
+Here you will find citations of all R packages used to generate this report. This appendix was generated using the package `knitcitations` and command `read.bibtex()`.
+
+```{r r_packages_bibliography, results = "asis", echo = FALSE, warning = FALSE, message = FALSE}
+#
+# Load associated R package
+library("knitcitations")
+#
+# Prepare to print all citations in "packages.bib" file by clearing all bibliographies that could be in the cache
+cleanbib()
+#
+# Set pandoc as the default output option for bib
+options(citation_format = "pandoc")
+#
+# Read and print bibliography from "packages.bib" file generated in the packages code chunk
+read.bibtex(file = "packages.bib")
+```
+
+# Appendix 2
+
+Here you will find information about the version of R and operating system (OS) used, as well as the versions of loaded R packages. This appendix was generated using `sessionInfo()`.
+
+```{r package_versions, echo=FALSE}
+# Current R session and package versions
+sessionInfo()
+```
